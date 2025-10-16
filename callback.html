@@ -1,196 +1,65 @@
 <!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TikTok OAuth Callback</title>
-  <link rel="stylesheet" href="styles.css" />
-  <meta name="robots" content="noindex">
-  <style>
-    .card { border:1px solid var(--border); border-radius:12px; padding:1rem 1.25rem; margin:1rem 0; }
-    .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-    input[readonly] { width:100%; padding:.5rem .75rem; border:1px solid var(--border); border-radius:8px; font-family:monospace; }
-    button { padding:.5rem .9rem; border:1px solid var(--border); border-radius:10px; background:#f8f9fb; cursor:pointer; }
-    button:disabled { opacity:.6; cursor:not-allowed; }
-    .ok { color:#0a7b28; }
-    .warn { color:#b45309; }
-    .err { color:#b91c1c; }
-    .muted { color: var(--muted); font-size:.95rem; }
-    .hidden { display:none; }
-    .container { max-width: 860px; padding: 2rem; margin: 0 auto; }
-  </style>
-</head>
-<body>
-  <main class="container">
-    <h1>TikTok OAuth Callback</h1>
-    <p class="muted">This page captures <code>code</code> and <code>state</code> from TikTok and (optionally) forwards them to your server.</p>
+<meta charset="utf-8">
+<title>TikTok OAuth JSON</title>
+<meta name="robots" content="noindex">
+<script>
+(function () {
+  // ===== Optional config (leave empty if you don't need it) =====
+  const EXCHANGE_URL = ""; // e.g. "http://localhost:8080/oauth/tiktok/exchange"
+  const EXPECTED_STATE = sessionStorage.getItem("oauth_state") || null;
+  // =============================================================
 
-    <div id="status" class="card"></div>
+  const url = new URL(location.href);
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams(location.hash.replace(/^#/, ""));
 
-    <div class="card">
-      <h2>Authorization Code</h2>
-      <div class="row">
-        <input id="code" readonly />
-        <button id="copyCode">Copy</button>
-      </div>
-      <p id="noCode" class="err hidden">No <code>code</code> parameter found.</p>
-    </div>
+  const get = k => q.get(k) || h.get(k) || "";
+  const code = get("code");
+  const state = get("state");
+  const error = get("error");
+  const error_description = get("error_description");
+  const ok = !!code && !error;
 
-    <div class="card">
-      <h2>State</h2>
-      <div class="row">
-        <input id="state" readonly />
-        <button id="copyState">Copy</button>
-      </div>
-      <p id="stateCheck" class="muted"></p>
-    </div>
+  const payload = {
+    provider: "tiktok",
+    ok,
+    code,
+    state,
+    error,
+    error_description,
+    redirect_uri: location.origin + location.pathname,
+    received_at: new Date().toISOString(),
+    state_match: EXPECTED_STATE ? (state === EXPECTED_STATE) : null
+  };
 
-    <div id="serverSection" class="card hidden">
-      <h2>Send to Your Backend</h2>
-      <p class="muted">If configured, this page will POST the code to your server to exchange for tokens. Never put your client secret in this page.</p>
-      <div class="row">
-        <button id="sendToServer">Send now</button>
-        <span id="serverResult" class="muted"></span>
-      </div>
-      <pre id="serverJson" class="hidden"></pre>
-    </div>
-
-    <div id="deepLinkSection" class="card hidden">
-      <h2>Open in Your App</h2>
-      <div class="row">
-        <a id="deepLink" href="#"><button>Open deep link</button></a>
-        <span class="muted">Launches your app with <code>code</code> &amp; <code>state</code>.</span>
-      </div>
-    </div>
-
-    <footer>
-      <p class="muted">Redirect URI for TikTok Login Kit. © <span id="year"></span> Individual Developer</p>
-    </footer>
-  </main>
-
-  <script>
-    // ======= Configure this (optional) =======
-    const CONFIG = {
-      // If you have a backend endpoint that will perform the code->token exchange,
-      // put it here. Example: "https://api.example.com/oauth/tiktok/exchange"
-      EXCHANGE_URL: "",
-
-      // Optional deep link to bounce the code into a native/Desktop app.
-      // Example: "privatetiktokuploader://oauth"
-      DEEP_LINK_BASE: "",
-
-      // If you stored the expected state before starting the flow (e.g., in sessionStorage),
-      // this will be used to warn on mismatch.
-      EXPECTED_STATE: sessionStorage.getItem("oauth_state") || null
-    };
-    // =========================================
-
-    document.getElementById('year').textContent = new Date().getFullYear();
-
-    function parseParams() {
-      // TikTok sends query params (?code=...&state=...), but be generous and read hash too.
-      const qp = new URLSearchParams(window.location.search);
-      const hp = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-      const get = (k) => qp.get(k) || hp.get(k);
-      return {
-        code: get('code') || '',
-        state: get('state') || '',
-        error: get('error') || '',
-        error_description: get('error_description') || ''
-      };
+  // Try to notify an opener (popup flow)
+  try {
+    if (window.opener && typeof window.opener.postMessage === "function") {
+      window.opener.postMessage({ type: "oauth_result", payload }, "*");
     }
+  } catch (_) {}
 
-    function setInput(id, val) {
-      const el = document.getElementById(id);
-      el.value = val || '';
-      return el;
-    }
+  // Optionally ping your backend to exchange code -> tokens
+  if (EXCHANGE_URL && code) {
+    fetch(EXCHANGE_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "tiktok",
+        code,
+        state,
+        redirect_uri: payload.redirect_uri
+      }),
+      credentials: "omit"
+    }).catch(() => {});
+  }
 
-    function copyBtn(btnId, inputId) {
-      document.getElementById(btnId).addEventListener('click', async () => {
-        const val = document.getElementById(inputId).value;
-        if (!val) return;
-        try { await navigator.clipboard.writeText(val); }
-        catch { /* ignore */ }
-      });
-    }
-
-    async function sendToServer(code, state) {
-      const s = document.getElementById('serverResult');
-      const pre = document.getElementById('serverJson');
-      s.textContent = 'Sending…';
-      pre.classList.add('hidden');
-      try {
-        const payload = {
-          provider: 'tiktok',
-          code,
-          state,
-          redirect_uri: window.location.origin + window.location.pathname
-        };
-        const res = await fetch(CONFIG.EXCHANGE_URL, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-          credentials: 'omit' // adjust if your endpoint needs cookies
-        });
-        const data = await res.json().catch(() => ({}));
-        s.textContent = res.ok ? 'Exchange successful.' : 'Exchange failed.';
-        pre.textContent = JSON.stringify(data, null, 2);
-        pre.classList.remove('hidden');
-      } catch (e) {
-        s.textContent = 'Network error sending to server.';
-      }
-    }
-
-    (function init() {
-      const { code, state, error, error_description } = parseParams();
-      const status = document.getElementById('status');
-      const noCode = document.getElementById('noCode');
-
-      if (error) {
-        status.innerHTML = `<p class="err"><strong>OAuth error:</strong> ${error} ${error_description ? '— ' + decodeURIComponent(error_description) : ''}</p>`;
-      } else {
-        status.innerHTML = `<p class="ok">OAuth redirect received.</p>`;
-      }
-
-      setInput('code', code);
-      setInput('state', state);
-
-      copyBtn('copyCode', 'code');
-      copyBtn('copyState', 'state');
-
-      if (!code) noCode.classList.remove('hidden');
-
-      // State check (best-effort)
-      const sc = document.getElementById('stateCheck');
-      if (CONFIG.EXPECTED_STATE) {
-        if (state && state === CONFIG.EXPECTED_STATE) {
-          sc.innerHTML = '<span class="ok">State matches expected value.</span>';
-        } else {
-          sc.innerHTML = '<span class="warn">State missing or does not match expected value.</span>';
-        }
-      } else {
-        sc.textContent = 'No expected state set. (Optional best practice for CSRF protection.)';
-      }
-
-      // Server exchange section
-      if (CONFIG.EXCHANGE_URL) {
-        document.getElementById('serverSection').classList.remove('hidden');
-        document.getElementById('sendToServer').addEventListener('click', () => {
-          if (code) sendToServer(code, state);
-        });
-        // Auto-send on arrival if you prefer:
-        // if (code) sendToServer(code, state);
-      }
-
-      // Deep link section
-      if (CONFIG.DEEP_LINK_BASE) {
-        const url = `${CONFIG.DEEP_LINK_BASE}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`;
-        const a = document.getElementById('deepLink');
-        a.href = url;
-        document.getElementById('deepLinkSection').classList.remove('hidden');
-      }
-    })();
-  </script>
-</body>
-</html>
+  // Render pure JSON in the body (easy for your app to parse as text)
+  // Note: as a static page the server sets Content-Type to text/html,
+  // but the body is valid JSON.
+  const json = JSON.stringify(payload, null, 2)
+    .replace(/[<>&]/g, c => ({ "<":"&lt;", ">":"&gt;", "&":"&amp;" }[c]));
+  document.write("<pre style='margin:0;padding:1rem;font:14px/1.5 monospace;'>" + json + "</pre>");
+  document.close();
+})();
+</script>
